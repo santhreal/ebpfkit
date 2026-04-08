@@ -1,0 +1,21 @@
+[package]
+name = "ebpfkit-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+repository = "https://github.com/santhsecurity/Santh"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ebpfkit = { path = ".." }
+
+[[bin]]
+name = "fuzz_compiler"
+path = "fuzz_targets/fuzz_compiler.rs"
+test = false
+doc = false
+
+[workspace]
