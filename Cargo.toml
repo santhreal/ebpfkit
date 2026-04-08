@@ -6,7 +6,10 @@ authors = ["Corum Collective LLC <contact@santh.io>"]
 rust-version = "1.85"
 description = "Kernel-Space eBPF Just-In-Time Pipeline Filter Compiler"
 license = "MIT"
-repository = "https://github.com/santhsecurity/Santh"
+repository = "https://github.com/santhsecurity/ebpfkit"
+homepage = "https://github.com/santhsecurity/ebpfkit"
+documentation = "https://docs.rs/ebpfkit"
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
 keywords = ["ebpf", "bpf", "jit", "kernel", "performance"]
 categories = ["os", "algorithms"]
 

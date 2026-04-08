@@ -467,21 +467,25 @@ pub mod core_detect {
     ///
     /// Returns `true` if `/sys/kernel/btf/vmlinux` exists, indicating
     /// the kernel was built with `CONFIG_DEBUG_INFO_BTF=y`.
+    #[must_use]
     pub fn has_btf() -> bool {
         Path::new("/sys/kernel/btf/vmlinux").exists()
     }
 
     /// Check if the kernel supports BPF ring buffers (Linux 5.8+).
+    #[must_use]
     pub fn has_ringbuf() -> bool {
         kernel_version() >= (5, 8, 0)
     }
 
     /// Check if the kernel supports fentry/fexit tracing programs (Linux 5.5+).
+    #[must_use]
     pub fn has_fentry() -> bool {
         kernel_version() >= (5, 5, 0)
     }
 
     /// Get a diagnostic summary of BPF CO-RE capabilities.
+    #[must_use]
     pub fn diagnostics() -> Vec<String> {
         let mut diags = Vec::new();
         let version = kernel_version();
