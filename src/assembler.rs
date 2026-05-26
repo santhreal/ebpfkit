@@ -134,6 +134,9 @@ impl fmt::Display for BpfInsn {
 /// ```
 #[must_use]
 pub fn format_program(program: &[BpfInsn]) -> String {
+    if program.is_empty() {
+        return "# empty program".to_string();
+    }
     program
         .iter()
         .enumerate()

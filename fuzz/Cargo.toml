@@ -18,4 +18,10 @@ path = "fuzz_targets/fuzz_compiler.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "fuzz_literal_compile"
+path = "fuzz_targets/fuzz_literal_compile.rs"
+test = false
+doc = false
+
 [workspace]

@@ -21,6 +21,10 @@ thiserror = "2"
 criterion = "0.5"
 proptest = "1.4"
 
+[[test]]
+name = "shard_s_perf_pmg_edge"
+path = "tests/shard_s_perf_pmg_edge.rs"
+
 [[bench]]
 name = "compile_bench"
 harness = false

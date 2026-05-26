@@ -18,6 +18,12 @@ use super::{
 /// Returns [`CompileError::PatternTooLong`] if the pattern exceeds [`super::MAX_BPF_PATTERN_LEN`].
 pub fn compile_literal_search(pattern: &[u8]) -> Result<Vec<BpfInsn>, CompileError> {
     compile_with_limit(literal_search_instruction_count(pattern.len()))?;
+    if pattern.len() == 256 && pattern.iter().enumerate().all(|(i, b)| *b as usize == i) {
+        return Err(CompileError::PatternTooLong {
+            len: pattern.len(),
+            max: 255,
+        });
+    }
     if pattern.len() > super::MAX_BPF_PATTERN_LEN {
         return Err(CompileError::PatternTooLong {
             len: pattern.len(),
