@@ -1,5 +1,7 @@
 # ebpfkit
 
+Part of [Santh](https://santh.dev) - open source Rust security and infrastructure tooling. Follow [@SanthProject](https://x.com/SanthProject) on X.
+
 Kernel-Space eBPF Just-In-Time Pipeline Filter Compiler
 
 `ebpfkit` — High-Performance JIT eBPF Compilation and Filtering
