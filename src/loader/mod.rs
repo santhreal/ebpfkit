@@ -11,7 +11,7 @@ mod ringbuf;
 pub use prog::{attach_to_socket, load_filter};
 pub use ringbuf::{create_ringbuf, poll_ringbuf};
 
-/// BPF syscall number — use libc constant for portability across architectures.
+/// BPF syscall number (use libc constant for portability across architectures).
 #[cfg(target_os = "linux")]
 pub(super) const SYS_BPF: libc::c_long = libc::SYS_bpf;
 #[cfg(not(target_os = "linux"))]

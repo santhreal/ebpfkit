@@ -1,4 +1,4 @@
-# ebpfkit-fuzz — Technical Spec
+# ebpfkit-fuzz: Technical Spec
 
 ## Overview
 

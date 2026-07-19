@@ -175,7 +175,7 @@ fn test_concurrent_huge_compilation() {
 fn test_malformed_character_class_trailing_dash() {
     // Trailing dash in character class: either error or treat dash as literal.
     let res = compile_character_class(b"a-");
-    // Both Ok (dash as literal) and Err are acceptable — must not panic.
+    // Both Ok (dash as literal) and Err are acceptable (must not panic).
     if let Err(e) = &res {
         assert_has_fix(e);
     }

@@ -27,68 +27,136 @@ pub enum CompileError {
 pub const MAX_BPF_PATTERN_LEN: usize = 1024;
 const MAX_BPF_INSTRUCTION_LEN: usize = 4096;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PatternRange {
+    /// A single byte that must match exactly.
     Single(u8),
+    /// An inclusive byte range.
     Span(u8, u8),
 }
 
-pub(crate) fn parse_character_class(class: &[u8]) -> Result<Vec<PatternRange>, CompileError> {
+/// A token in the flat stream produced by scanning a character class.
+#[derive(Debug)]
+enum Token {
+    /// A single literal byte (e.g. `a` or `\.`).
+    Byte(u8),
+    /// A raw, unescaped hyphen that may act as a range operator.
+    Dash,
+    /// A pre-expanded class escape (e.g. `\d` becomes `0-9`).
+    Class(Vec<PatternRange>),
+}
+
+/// Decode an escape sequence starting at `class[idx]`, which must be `b'\'`.
+/// Returns the token and the number of input bytes consumed.
+fn decode_character_class_escape(
+    class: &[u8],
+    idx: usize,
+) -> Result<(Token, usize), CompileError> {
+    if idx + 1 >= class.len() {
+        return Err(CompileError::InvalidPattern {
+            reason: "unterminated character-class escape",
+        });
+    }
+    let escaped = class[idx + 1];
+    let token = match escaped {
+        b'n' => Token::Byte(b'\n'),
+        b'r' => Token::Byte(b'\r'),
+        b't' => Token::Byte(b'\t'),
+        b'\\' => Token::Byte(b'\\'),
+        b']' => Token::Byte(b']'),
+        b'[' => Token::Byte(b'['),
+        b'-' => Token::Byte(b'-'),
+        b'.' => Token::Byte(b'.'),
+        b'd' => Token::Class(vec![PatternRange::Span(b'0', b'9')]),
+        b's' => Token::Class(vec![
+            PatternRange::Span(b'\t', b'\r'),
+            PatternRange::Single(b' '),
+        ]),
+        b'w' => Token::Class(vec![
+            PatternRange::Span(b'a', b'z'),
+            PatternRange::Span(b'A', b'Z'),
+            PatternRange::Span(b'0', b'9'),
+            PatternRange::Single(b'_'),
+        ]),
+        b'D' | b'S' | b'W' => {
+            return Err(CompileError::InvalidPattern {
+                reason: "negated character-class escapes are not supported",
+            });
+        }
+        _ => {
+            return Err(CompileError::InvalidPattern {
+                reason: "unknown character-class escape sequence",
+            });
+        }
+    };
+    Ok((token, 2))
+}
+
+/// Convert a flat token stream into a list of `PatternRange` values, treating
+/// an unescaped `-` as a range operator only when it sits between two literal bytes.
+fn tokens_to_ranges(tokens: &[Token]) -> Result<Vec<PatternRange>, CompileError> {
     let mut ranges = Vec::new();
     let mut idx = 0;
-
-    while idx < class.len() {
-        let start = match class[idx] {
-            b'\\' => {
-                if idx + 1 >= class.len() {
+    while idx < tokens.len() {
+        if idx + 2 < tokens.len() {
+            if let (Token::Byte(start), Token::Dash, Token::Byte(end)) =
+                (&tokens[idx], &tokens[idx + 1], &tokens[idx + 2])
+            {
+                if start > end {
                     return Err(CompileError::InvalidPattern {
-                        reason: "unterminated character-class escape",
+                        reason: "character class range endpoints are reversed",
                     });
                 }
-                let escaped = class[idx + 1];
-                idx += 2;
-                escaped
+                ranges.push(PatternRange::Span(*start, *end));
+                idx += 3;
+                continue;
             }
-            b => {
-                idx += 1;
-                b
-            }
-        };
-
-        let is_range = idx + 1 < class.len() && class[idx] == b'-';
-        if is_range {
-            let end = match class[idx + 1] {
-                b'\\' => {
-                    if idx + 2 >= class.len() {
-                        return Err(CompileError::InvalidPattern {
-                            reason: "unterminated character-class range escape",
-                        });
-                    }
-
-                    let escaped = class[idx + 2];
-                    idx += 3;
-                    escaped
-                }
-                b => {
-                    idx += 2;
-                    b
-                }
-            };
-
-            if start > end {
-                return Err(CompileError::InvalidPattern {
-                    reason: "character class range endpoints are reversed",
-                });
-            }
-
-            ranges.push(PatternRange::Span(start, end));
-            continue;
         }
+        if matches!(tokens[idx], Token::Dash)
+            && idx + 1 < tokens.len()
+            && matches!(tokens[idx + 1], Token::Dash)
+        {
+            return Err(CompileError::InvalidPattern {
+                reason: "character class contains consecutive unescaped dashes",
+            });
+        }
+        match &tokens[idx] {
+            Token::Byte(b) => ranges.push(PatternRange::Single(*b)),
+            Token::Dash => ranges.push(PatternRange::Single(b'-')),
+            Token::Class(c) => ranges.extend(c.iter().copied()),
+        }
+        idx += 1;
+    }
+    Ok(ranges)
+}
 
-        ranges.push(PatternRange::Single(start));
+pub(crate) fn parse_character_class(class: &[u8]) -> Result<Vec<PatternRange>, CompileError> {
+    // Character classes match a single byte. If the input is valid UTF-8 and
+    // contains any non-ASCII byte, it must contain a multi-byte codepoint; reject
+    // it rather than silently split the codepoint into unrelated byte ranges.
+    if std::str::from_utf8(class).is_ok() && class.iter().any(|b| *b >= 0x80) {
+        return Err(CompileError::InvalidPattern {
+            reason: "character class contains non-ASCII codepoints; use raw bytes or an escape sequence",
+        });
     }
 
-    Ok(ranges)
+    let mut tokens = Vec::new();
+    let mut idx = 0;
+    while idx < class.len() {
+        if class[idx] == b'\\' {
+            let (token, consumed) = decode_character_class_escape(class, idx)?;
+            tokens.push(token);
+            idx += consumed;
+        } else if class[idx] == b'-' {
+            tokens.push(Token::Dash);
+            idx += 1;
+        } else {
+            tokens.push(Token::Byte(class[idx]));
+            idx += 1;
+        }
+    }
+
+    tokens_to_ranges(&tokens)
 }
 
 /// Validates generated instruction count before assembling BPF code.
@@ -113,9 +181,9 @@ pub(crate) fn literal_search_instruction_count(pattern_len: usize) -> usize {
         return 4;
     }
 
-    // 2 loads for start/end, 1 loop index init, 1 bounds setup,
-    // and 2 instructions per literal byte plus fixed control-flow.
-    10 + pattern_len * 2
+    // 2 context loads, 1 loop index init, 5 setup insns (R5/R6 + bounds placeholder),
+    // 2 instructions per literal byte, and 6 fixed control-flow insns.
+    14 + pattern_len * 2
 }
 
 pub(crate) fn estimate_character_class_instructions(ranges: &[PatternRange]) -> usize {
@@ -123,13 +191,11 @@ pub(crate) fn estimate_character_class_instructions(ranges: &[PatternRange]) -> 
         return 2;
     }
 
-    // Single-byte comparisons use 1 instruction and span comparisons use 3.
-    // Always include false/true return blocks.
-    let compare_count = ranges.iter().fold(0usize, |acc, range| match range {
-        PatternRange::Single(_) => acc + 1,
-        PatternRange::Span(_, _) => acc + 3,
-    });
-    2 + compare_count
+    // Must equal compile_char_class's emitted length exactly (it is used
+    // both as the compile_with_limit bound and the Vec capacity). The
+    // canonical character-class program emits JLT + JLE per range and a
+    // fixed fail (MOV R0,0 + EXIT) + match (MOV R0,1 + EXIT) block = 4.
+    4 + ranges.len() * 2
 }
 
 pub(crate) fn estimate_alternation_instructions(alternatives: &[&[u8]]) -> usize {
@@ -137,17 +203,21 @@ pub(crate) fn estimate_alternation_instructions(alternatives: &[&[u8]]) -> usize
         return 2;
     }
 
-    // per alternative:
-    // 1 bound check, one load+compare per byte, one match jump.
+    // Must equal compile_alternation's emitted length exactly (bound + Vec
+    // capacity). Per alternative: bound check = MOV R6,R5 + ADD R6,len +
+    // JGT R6,R3 = 3; per byte LDX_B + JNE = 2 (=> 2*len); match jump JA = 1;
+    // total 4 + 2*len. Fixed blocks: fail (MOV+EXIT) + success (MOV+EXIT) = 4.
+    // (The previous estimate charged the 3-instruction bound check as 1 and the
+    // fixed blocks as 2, so it UNDER-estimated by 2 per alternative + 2.)
     let alternative_count = alternatives.iter().map(|alt| {
         if alt.is_empty() {
             0
         } else {
-            1 + (alt.len() * 2) + 1
+            4 + (alt.len() * 2)
         }
     });
 
-    2 + alternative_count.sum::<usize>()
+    4 + alternative_count.sum::<usize>()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -173,7 +243,7 @@ mod tests {
         assert!(matches!(
             parse_character_class(b"a-\\"),
             Err(CompileError::InvalidPattern {
-                reason: "unterminated character-class range escape"
+                reason: "unterminated character-class escape"
             })
         ));
     }
@@ -202,21 +272,175 @@ mod tests {
     #[test]
     fn literal_count_for_empty_pattern_is_fixed() {
         assert_eq!(literal_search_instruction_count(0), 4);
-        assert_eq!(literal_search_instruction_count(3), 16);
     }
 
     #[test]
-    fn range_estimate_is_non_empty_for_singleton() {
-        let ranges = vec![PatternRange::Single(0x41)];
-        assert_eq!(estimate_character_class_instructions(&ranges), 3);
+    fn literal_count_matches_compiled_program_length() {
+        use crate::compiler::compile_literal_search;
+        for len in [1, 3, 10, 100, 1024] {
+            let pattern = vec![b'a'; len];
+            let prog = compile_literal_search(&pattern).unwrap();
+            assert_eq!(
+                literal_search_instruction_count(len),
+                prog.len(),
+                "instruction count estimate must equal actual compiled length for len {len}"
+            );
+        }
     }
 
     #[test]
-    fn alternation_estimate_counts_bound_checks() {
-        let alternates: Vec<&[u8]> = vec![b"aa", b"b"];
+    fn character_class_rejects_non_ascii_codepoints() {
+        // Valid UTF-8 with a multi-byte codepoint must be rejected, not split
+        // into unrelated byte ranges.
+        assert!(matches!(
+            parse_character_class("é".as_bytes()),
+            Err(CompileError::InvalidPattern {
+                reason: "character class contains non-ASCII codepoints; use raw bytes or an escape sequence"
+            })
+        ));
+    }
+
+    #[test]
+    fn character_class_accepts_raw_invalid_utf8_bytes() {
+        // Invalid UTF-8 bytes should be matched as raw bytes, not silently
+        // reinterpreted as a multi-byte codepoint.
+        let ranges = parse_character_class(b"\x00-\xFF").unwrap();
+        assert_eq!(ranges, vec![PatternRange::Span(0x00, 0xFF)]);
+    }
+
+    #[test]
+    fn character_class_decodes_standard_escapes() {
         assert_eq!(
-            estimate_alternation_instructions(&alternates),
-            2 + ((1 + 4 + 1) + (1 + 2 + 1))
+            parse_character_class(br"\n\r\t\\.\-\]\[").unwrap(),
+            vec![
+                PatternRange::Single(b'\n'),
+                PatternRange::Single(b'\r'),
+                PatternRange::Single(b'\t'),
+                PatternRange::Single(b'\\'),
+                PatternRange::Single(b'.'),
+                PatternRange::Single(b'-'),
+                PatternRange::Single(b']'),
+                PatternRange::Single(b'['),
+            ]
         );
+    }
+
+    #[test]
+    fn character_class_expands_class_escapes() {
+        assert_eq!(
+            parse_character_class(br"\d").unwrap(),
+            vec![PatternRange::Span(b'0', b'9')]
+        );
+        assert_eq!(
+            parse_character_class(br"\s").unwrap(),
+            vec![
+                PatternRange::Span(b'\t', b'\r'),
+                PatternRange::Single(b' '),
+            ]
+        );
+        assert_eq!(
+            parse_character_class(br"\w").unwrap(),
+            vec![
+                PatternRange::Span(b'a', b'z'),
+                PatternRange::Span(b'A', b'Z'),
+                PatternRange::Span(b'0', b'9'),
+                PatternRange::Single(b'_'),
+            ]
+        );
+    }
+
+    #[test]
+    fn character_class_rejects_negated_class_escapes() {
+        for class in [br"\D", br"\S", br"\W"] {
+            assert!(
+                matches!(
+                    parse_character_class(class),
+                    Err(CompileError::InvalidPattern {
+                        reason: "negated character-class escapes are not supported"
+                    })
+                ),
+                "class {class:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn character_class_range_with_escape_endpoint_works() {
+        // \d-\w is not a valid range; the dash is interpreted as a literal
+        // byte between the two expanded classes.
+        let ranges = parse_character_class(br"\d-\w").unwrap();
+        let mut expected = vec![PatternRange::Span(b'0', b'9')];
+        expected.push(PatternRange::Single(b'-'));
+        expected.extend([
+            PatternRange::Span(b'a', b'z'),
+            PatternRange::Span(b'A', b'Z'),
+            PatternRange::Span(b'0', b'9'),
+            PatternRange::Single(b'_'),
+        ]);
+        assert_eq!(ranges, expected);
+    }
+
+    #[test]
+    fn character_class_rejects_consecutive_dashes() {
+        for class in [&b"a--z"[..], &b"-----"[..], &b"a---b"[..]] {
+            assert!(
+                matches!(
+                    parse_character_class(class),
+                    Err(CompileError::InvalidPattern {
+                        reason: "character class contains consecutive unescaped dashes"
+                    })
+                ),
+                "class {class:?} should be rejected for consecutive unescaped dashes"
+            );
+        }
+    }
+
+    #[test]
+    fn char_class_estimate_equals_actual_compiled_length() {
+        use crate::compiler::compile_character_class;
+        // The estimate must MATCH the real emitted program length (it is used as
+        // both the compile_with_limit bound and the Vec capacity). Assert exact
+        // equality across single, span, and mixed classes, computing the ranges
+        // via the same parser compile uses.
+        for class in [
+            &b"a"[..],      // single Span/Single after parse
+            &b"az"[..],     // two singles
+            &b"a-z"[..],    // one span
+            &b"a-z0-9"[..], // two spans
+            &b"a-z0-9_"[..],// two spans + single
+        ] {
+            let ranges = parse_character_class(class).unwrap();
+            let estimate = estimate_character_class_instructions(&ranges);
+            let actual = compile_character_class(class).unwrap().len();
+            assert_eq!(
+                estimate, actual,
+                "char-class estimate {estimate} != actual {actual} for {class:?}"
+            );
+        }
+        // Concrete anchor: a single Single range is JEQ+JA + 4 fixed = 6.
+        assert_eq!(
+            estimate_character_class_instructions(&[PatternRange::Single(0x41)]),
+            6
+        );
+    }
+
+    #[test]
+    fn alternation_estimate_equals_actual_compiled_length() {
+        use crate::compiler::compile_alternation;
+        for alts in [
+            vec![&b"aa"[..], &b"b"[..]],
+            vec![&b"foo"[..]],
+            vec![&b"ab"[..], &b"cd"[..], &b"ef"[..]],
+        ] {
+            let estimate = estimate_alternation_instructions(&alts);
+            let actual = compile_alternation(&alts).unwrap().len();
+            assert_eq!(
+                estimate, actual,
+                "alternation estimate {estimate} != actual {actual} for {alts:?}"
+            );
+        }
+        // Concrete anchor: ["aa","b"] = 4 fixed + (4+2*2) + (4+2*1) = 18.
+        let alternates: Vec<&[u8]> = vec![b"aa", b"b"];
+        assert_eq!(estimate_alternation_instructions(&alternates), 18);
     }
 }

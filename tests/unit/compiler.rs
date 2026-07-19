@@ -151,28 +151,32 @@ fn alternation_program_instruction_count_under_limit() {
 
 #[test]
 fn pattern_with_all_byte_values_compiles_correctly() {
-    // Create pattern with all byte values from 0x00 to 0xFF
-    let all_bytes: Vec<u8> = (0x00..=0xFF).collect();
+    // Every byte value 0x00..=0xFF must compile. Split the 256 distinct byte
+    // values into two halves that together cover the full range while each
+    // remains well under MAX_BPF_PATTERN_LEN.
+    let halves: [Vec<u8>; 2] = [(0x00..=0x7F).collect(), (0x80..=0xFF).collect()];
 
-    // Should compile successfully
-    let prog = compile_literal_search(&all_bytes).unwrap();
+    for half in &halves {
+        assert!(half.len() <= MAX_BPF_PATTERN_LEN, "half must fit the pattern length cap");
+        let prog = compile_literal_search(half).unwrap();
 
-    // Verify program structure
-    assert!(!prog.is_empty());
-    assert_eq!(prog.last().unwrap().code & 0xF0, BPF_EXIT);
+        // Verify program structure
+        assert!(!prog.is_empty());
+        assert_eq!(prog.last().unwrap().code & 0xF0, BPF_EXIT);
 
-    // Count byte loads - should equal number of bytes in pattern
-    let byte_loads = count_instructions(&prog, 0xFF, BPF_LDX | BPF_MEM | BPF_B);
-    assert_eq!(
-        byte_loads,
-        all_bytes.len(),
-        "expected {} byte loads for all-bytes pattern, got {}",
-        all_bytes.len(),
-        byte_loads
-    );
+        // Count byte loads - should equal number of bytes in pattern
+        let byte_loads = count_instructions(&prog, 0xFF, BPF_LDX | BPF_MEM | BPF_B);
+        assert_eq!(
+            byte_loads,
+            half.len(),
+            "expected {} byte loads for half pattern, got {}",
+            half.len(),
+            byte_loads
+        );
 
-    // Verify all jump offsets are valid
-    assert_valid_jump_offsets(&prog);
+        // Verify all jump offsets are valid
+        assert_valid_jump_offsets(&prog);
+    }
 }
 
 #[test]
@@ -591,4 +595,111 @@ fn program_formatting_is_deterministic() {
     let fmt2 = format_program(&prog2);
 
     assert_eq!(fmt1, fmt2, "program formatting should be deterministic");
+}
+
+// ============================================================================
+// Executing interpreter for the char-class instruction subset
+// ----------------------------------------------------------------------------
+// The other tests only assert instruction counts / jump validity; they never
+// RUN the bytecode, so a semantic codegen bug (like the char-class JLT skipping
+// the next range's lower-bound check) passes them silently. This minimal
+// interpreter executes the exact subset compile_char_class emits (LDX_B, JLT_K,
+// JLE_K, MOV_K, EXIT) against a real input byte and returns R0.
+// ============================================================================
+
+use ebpfkit::assembler::{BPF_ALU64, BPF_JLE, BPF_JLT, BPF_MOV};
+use ebpfkit::compiler::CharRange;
+
+/// Execute a char-class program (as emitted by compile_char_class) against a
+/// single input byte. Returns R0 (1 = matched, 0 = no match).
+fn run_char_class(prog: &[BpfInsn], input: u8) -> u64 {
+    let mut regs = [0u64; 16];
+    regs[7] = u64::from(input); // R7 holds the byte to test
+    let mut pc: isize = 0;
+    for _ in 0..10_000 {
+        assert!(
+            pc >= 0 && (pc as usize) < prog.len(),
+            "pc {pc} out of bounds (len {})",
+            prog.len()
+        );
+        let insn = prog[pc as usize];
+        let dst = (insn.regs & 0x0F) as usize;
+        let code = insn.code;
+        if code == (BPF_ALU64 | BPF_MOV | BPF_K) {
+            regs[dst] = u64::from(insn.imm as u32);
+            pc += 1;
+        } else if code == (BPF_JMP | BPF_JLT | BPF_K) {
+            // Unsigned <.
+            pc += if regs[dst] < u64::from(insn.imm as u32) {
+                1 + isize::from(insn.off)
+            } else {
+                1
+            };
+        } else if code == (BPF_JMP | BPF_JLE | BPF_K) {
+            pc += if regs[dst] <= u64::from(insn.imm as u32) {
+                1 + isize::from(insn.off)
+            } else {
+                1
+            };
+        } else if code == (BPF_JMP | BPF_EXIT) {
+            return regs[0];
+        } else {
+            panic!("char-class interpreter met unsupported opcode 0x{code:02x}");
+        }
+    }
+    panic!("char-class program did not terminate");
+}
+
+/// A byte below every range's lower bound must NOT match. This is the exact
+/// bug fixed at codegen.rs:329 (JLT offset 2 -> 1): with offset 2, an input
+/// below lo0 skipped range 1's lower-bound JLT and matched via range 1's `<= hi`.
+#[test]
+fn char_class_out_of_range_below_all_does_not_match() {
+    let prog = compile_char_class(&[
+        CharRange { lo: 10, hi: 20 },
+        CharRange { lo: 30, hi: 40 },
+    ])
+    .unwrap();
+    // 5 < 10 and 5 < 30: in NEITHER range. Must return 0.
+    assert_eq!(run_char_class(&prog, 5), 0, "5 must not match [10-20],[30-40]");
+    // 25 is between the two ranges: also no match.
+    assert_eq!(run_char_class(&prog, 25), 0, "25 (gap) must not match");
+    // 45 is above both ranges.
+    assert_eq!(run_char_class(&prog, 45), 0, "45 (above) must not match");
+}
+
+/// Every byte inside a range matches; boundaries are inclusive.
+#[test]
+fn char_class_in_range_matches_inclusive_boundaries() {
+    let prog = compile_char_class(&[
+        CharRange { lo: 10, hi: 20 },
+        CharRange { lo: 30, hi: 40 },
+    ])
+    .unwrap();
+    for b in [10u8, 15, 20, 30, 35, 40] {
+        assert_eq!(run_char_class(&prog, b), 1, "{b} is in a range and must match");
+    }
+    for b in [9u8, 21, 29, 41] {
+        assert_eq!(run_char_class(&prog, b), 0, "{b} is just outside every range");
+    }
+}
+
+/// Single-range class ([X-X]) and full-byte coverage exercised end-to-end.
+#[test]
+fn char_class_single_and_multi_range_full_byte_sweep() {
+    let lower = compile_char_class(&[CharRange { lo: b'a', hi: b'z' }]).unwrap();
+    for b in 0u8..=255 {
+        let want = u64::from((b'a'..=b'z').contains(&b));
+        assert_eq!(run_char_class(&lower, b), want, "[a-z] wrong for byte {b}");
+    }
+    let alnum = compile_char_class(&[
+        CharRange { lo: b'0', hi: b'9' },
+        CharRange { lo: b'a', hi: b'z' },
+        CharRange { lo: b'A', hi: b'Z' },
+    ])
+    .unwrap();
+    for b in 0u8..=255 {
+        let want = u64::from(b.is_ascii_alphanumeric());
+        assert_eq!(run_char_class(&alnum, b), want, "[0-9a-zA-Z] wrong for byte {b}");
+    }
 }

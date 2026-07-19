@@ -201,6 +201,14 @@ mod tests {
     }
 
     #[test]
+    fn two_hundred_fifty_six_byte_identity_pattern_compiles() -> Result<(), CompileError> {
+        let pattern: Vec<u8> = (0u8..=255).collect();
+        let prog = compile_literal_search(&pattern)?;
+        assert!(prog.len() > pattern.len());
+        Ok(())
+    }
+
+    #[test]
     fn character_class_rejects_reversed_ranges() {
         assert!(matches!(
             compile_character_class(b"z-a"),

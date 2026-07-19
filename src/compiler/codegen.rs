@@ -18,19 +18,13 @@ use super::{
 /// Returns [`CompileError::PatternTooLong`] if the pattern exceeds [`super::MAX_BPF_PATTERN_LEN`].
 pub fn compile_literal_search(pattern: &[u8]) -> Result<Vec<BpfInsn>, CompileError> {
     compile_with_limit(literal_search_instruction_count(pattern.len()))?;
-    if pattern.len() == 256 && pattern.iter().enumerate().all(|(i, b)| *b as usize == i) {
-        return Err(CompileError::PatternTooLong {
-            len: pattern.len(),
-            max: 255,
-        });
-    }
     if pattern.len() > super::MAX_BPF_PATTERN_LEN {
         return Err(CompileError::PatternTooLong {
             len: pattern.len(),
             max: super::MAX_BPF_PATTERN_LEN,
         });
     }
-    let mut prog = Vec::new();
+    let mut prog = Vec::with_capacity(literal_search_instruction_count(pattern.len()));
 
     // Inputs:
     // R1 = ctx (context struct pointing to data)
@@ -127,77 +121,32 @@ pub fn compile_literal_search(pattern: &[u8]) -> Result<Vec<BpfInsn>, CompileErr
 ///
 /// On match the program sets `R0 = 1` and exits.
 /// On mismatch the program sets `R0 = 0` and exits.
+/// Compile a character class (e.g. `a-z0-9`) into BPF byte-comparison logic.
+///
+/// The input `class` should contain only the inside of the square brackets,
+/// e.g. `b"a-z0-9"` for `[a-z0-9]`.
+/// The register `R7` must already hold the byte to evaluate.
+///
+/// On match the program sets `R0 = 1` and exits.
+/// On mismatch the program sets `R0 = 0` and exits.
+///
+/// This is a thin wrapper around [`compile_char_class`]; it exists to preserve
+/// the public text-based API while the range-based `compile_char_class` owns the
+/// single code-generation path.
 pub fn compile_character_class(class: &[u8]) -> Result<Vec<BpfInsn>, CompileError> {
-    let ranges = parse_character_class(class)?;
-    if ranges.is_empty() {
+    if class.is_empty() {
         return Ok(vec![alu64_imm!(BPF_MOV, R0, 0), exit!()]);
     }
 
-    compile_with_limit(estimate_character_class_instructions(&ranges))?;
-
-    let mut prog = Vec::with_capacity(estimate_character_class_instructions(&ranges));
-    let mut mismatch_jump_indices: Vec<Vec<usize>> = Vec::with_capacity(ranges.len());
-    let mut range_match_jump_indices: Vec<usize> = Vec::with_capacity(ranges.len());
-    let mut range_start_indices = Vec::with_capacity(ranges.len());
-
-    for range in ranges {
-        range_start_indices.push(prog.len());
-        mismatch_jump_indices.push(Vec::new());
-        let current_range = mismatch_jump_indices.len() - 1;
-
-        match range {
-            PatternRange::Single(value) => {
-                let jump_idx = prog.len();
-                prog.push(jmp_imm!(BPF_JEQ, R7, value as i32, 0));
-                mismatch_jump_indices[current_range].push(jump_idx);
-
-                let match_jump_idx = prog.len();
-                prog.push(jmp_imm!(BPF_JA, R0, 0, 0));
-                range_match_jump_indices.push(match_jump_idx);
-            }
-            PatternRange::Span(start, end) => {
-                let low_jump_idx = prog.len();
-                prog.push(jmp_imm!(BPF_JLT, R7, start as i32, 0));
-                mismatch_jump_indices[current_range].push(low_jump_idx);
-
-                let high_jump_idx = prog.len();
-                prog.push(jmp_imm!(BPF_JGT, R7, end as i32, 0));
-                mismatch_jump_indices[current_range].push(high_jump_idx);
-
-                let match_jump_idx = prog.len();
-                prog.push(jmp_imm!(BPF_JA, R0, 0, 0));
-                range_match_jump_indices.push(match_jump_idx);
-            }
-        }
-    }
-
-    let fail_idx = prog.len();
-    prog.push(alu64_imm!(BPF_MOV, R0, 0));
-    prog.push(exit!());
-
-    let match_idx = prog.len();
-    prog.push(alu64_imm!(BPF_MOV, R0, 1));
-    prog.push(exit!());
-
-    for (i, range_mismatches) in mismatch_jump_indices.iter().enumerate() {
-        let next_target = range_start_indices.get(i + 1).copied().unwrap_or(fail_idx);
-        for &jump_idx in range_mismatches {
-            let expected = prog[jump_idx].imm;
-            let op = if prog[jump_idx].code == (BPF_JMP | BPF_JEQ | BPF_K) {
-                BPF_JNE
-            } else {
-                prog[jump_idx].code & 0xF0
-            };
-
-            patch_imm_jump(&mut prog, jump_idx, next_target, R7, expected, op);
-        }
-    }
-
-    for jump_idx in range_match_jump_indices {
-        patch_match_jump(&mut prog, jump_idx, match_idx);
-    }
-
-    Ok(prog)
+    let ranges = parse_character_class(class)?;
+    let ranges: Vec<CharRange> = ranges
+        .iter()
+        .map(|r| match r {
+            PatternRange::Single(v) => CharRange { lo: *v, hi: *v },
+            PatternRange::Span(lo, hi) => CharRange { lo: *lo, hi: *hi },
+        })
+        .collect();
+    compile_char_class(&ranges)
 }
 
 /// Compile a single-byte alternation matcher by evaluating alternatives in sequence.
@@ -308,27 +257,27 @@ pub fn compile_char_class(ranges: &[CharRange]) -> Result<Vec<BpfInsn>, CompileE
     for r in ranges {
         if r.lo > r.hi {
             return Err(CompileError::InvalidPattern {
-                reason: "character class range start must be <= end",
+                reason: "character class range endpoints are reversed",
             });
         }
     }
 
-    let estimated = 4 + ranges.len() * 3;
+    // Per range: JLT + JLE = 2 instructions. Fixed fail/match blocks = 4.
+    let estimated = 4 + ranges.len() * 2;
     compile_with_limit(estimated)?;
 
     let mut prog = Vec::with_capacity(estimated);
 
-    // Load byte at R5: R6 = *(u8 *)(R5 + 0)
-    prog.push(ldx_mem!(BPF_B, R6, R5, 0));
-
-    // For each range, check if R6 is in [lo, hi]
-    // If match: jump to MATCH label
+    // For each range, check if R7 is in [lo, hi].
+    // If match: jump to MATCH label.
     let mut match_jumps = Vec::with_capacity(ranges.len());
     for r in ranges {
-        // if R6 < lo: skip this range
-        prog.push(jmp_imm!(BPF_JLT, R6, i32::from(r.lo), 2));
-        // if R6 <= hi: match!
-        prog.push(jmp_imm!(BPF_JLE, R6, i32::from(r.hi), 0));
+        // if R7 < lo: skip the JLE (this range's upper-bound check) and fall
+        // to the NEXT range's JLT. Offset is relative to the following
+        // instruction, so the correct skip is 1.
+        prog.push(jmp_imm!(BPF_JLT, R7, i32::from(r.lo), 1));
+        // if R7 <= hi: match!
+        prog.push(jmp_imm!(BPF_JLE, R7, i32::from(r.hi), 0));
         match_jumps.push(prog.len() - 1);
         // fall through to next range
     }

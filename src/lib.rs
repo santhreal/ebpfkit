@@ -1,4 +1,4 @@
-//! `ebpfkit` — High-Performance JIT eBPF Compilation and Filtering
+//! `ebpfkit`: High-Performance JIT eBPF Compilation and Filtering
 //!
 //! Exposes a zero-dependency, bare-metal BPF compiler to bridge string
 //! constraints dynamically into kernel ring-0 operations.

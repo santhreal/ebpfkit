@@ -62,15 +62,27 @@ pub fn load_filter(insns: &[BpfInsn]) -> Result<RawFd, std::io::Error> {
     })?;
     let license = b"GPL\0";
 
+    // Allocate a verifier log buffer up-front so the kernel can write the
+    // reason for a BPF_PROG_LOAD rejection (verifier failure or invalid
+    // program). The buffer is zeroed; any written bytes are ASCII text
+    // followed by NULs.
+    let mut log_buf = vec![0u8; 16 * 1024];
+    let log_size = u32::try_from(log_buf.len()).unwrap_or(u32::MAX);
+
     let attr = BpfAttrProgLoad {
         prog_type: BPF_PROG_TYPE_SOCKET_FILTER,
         insn_cnt,
         insns: insns.as_ptr() as u64,
         license: license.as_ptr() as u64,
+        log_level: 1,
+        log_size,
+        log_buf: log_buf.as_mut_ptr() as u64,
         ..Default::default()
     };
 
     // SAFETY: The syscall transfers boundaries correctly to the kernel BPF verifier.
+    // `log_buf` and `attr` are valid for the syscall duration and remain live
+    // after the call so we can read the verifier log on failure.
     let fd = unsafe {
         libc::syscall(
             SYS_BPF,
@@ -81,7 +93,15 @@ pub fn load_filter(insns: &[BpfInsn]) -> Result<RawFd, std::io::Error> {
     };
 
     if fd < 0 {
-        return Err(std::io::Error::last_os_error());
+        let raw_err = std::io::Error::last_os_error();
+        // The kernel may have written a verifier log even on failure.
+        let log = String::from_utf8_lossy(&log_buf);
+        let log = log.trim_matches('\0').trim();
+        let log = if log.is_empty() { "(empty)" } else { log };
+        return Err(std::io::Error::new(
+            raw_err.kind(),
+            format!("{raw_err} -- BPF verifier log: {log}"),
+        ));
     }
 
     Ok(fd as RawFd)
@@ -108,4 +128,34 @@ pub fn attach_to_socket(prog_fd: RawFd, socket_fd: RawFd) -> Result<(), std::io:
     }
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assembler::{BpfInsn, BPF_ALU64, BPF_EXIT, BPF_JMP, BPF_K, BPF_MOV, R0};
+
+    /// A valid minimal BPF program: r0 = 0; exit. Without root/CAP_BPF the
+    /// syscall will fail (usually EPERM), but `load_filter` must return a
+    /// structured error that includes the verifier log buffer.
+    #[test]
+    fn load_filter_includes_verifier_log_in_error() {
+        let insns = [
+            BpfInsn::new(BPF_ALU64 | BPF_MOV | BPF_K, R0, 0, 0, 0),
+            BpfInsn::new(BPF_JMP | BPF_EXIT, 0, 0, 0, 0),
+        ];
+        let err = load_filter(&insns).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("BPF verifier log:"),
+            "error should include the captured verifier log: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_filter_rejects_empty_program() {
+        let err = load_filter(&[]).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
 }
