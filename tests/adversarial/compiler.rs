@@ -10,7 +10,7 @@ fn compile_literal_search_unicode_high_bytes() {
     let result = compile_literal_search(pattern.as_bytes());
     assert!(result.is_ok());
     let prog = result.unwrap();
-    assert!(prog.len() > 0);
+    assert!(!prog.is_empty());
     assert_eq!(prog.last().unwrap().code & 0xF0, BPF_EXIT);
 }
 

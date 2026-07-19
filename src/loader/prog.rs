@@ -130,7 +130,6 @@ pub fn attach_to_socket(prog_fd: RawFd, socket_fd: RawFd) -> Result<(), std::io:
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn record_within_mapping_accepts_valid_and_rejects_out_of_bounds() {
         let ring = 4096usize; // readable data region = 2*ring = 8192
-        // Ordinary record well inside the ring.
+                              // Ordinary record well inside the ring.
         assert!(record_within_mapping(BPF_RINGBUF_HDR_SZ, 100, ring));
         // Exactly at the 2*ring boundary is fine (end == bound).
         assert!(record_within_mapping(0, 2 * ring, ring));
@@ -535,9 +535,7 @@ mod tests {
         let efd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
         assert!(efd >= 0, "eventfd failed");
 
-        let old = unsafe {
-            libc::signal(libc::SIGUSR1, noop_signal_handler as libc::sighandler_t)
-        };
+        let old = unsafe { libc::signal(libc::SIGUSR1, noop_signal_handler as libc::sighandler_t) };
         assert!(old != libc::SIG_ERR, "failed to install SIGUSR1 handler");
 
         let epoll = EpollFd::new().expect("epoll_create1 failed");
@@ -558,10 +556,17 @@ mod tests {
                         std::mem::size_of::<u64>(),
                     )
                 };
-                assert_eq!(written, std::mem::size_of::<u64>() as isize, "eventfd write failed");
+                assert_eq!(
+                    written,
+                    std::mem::size_of::<u64>() as isize,
+                    "eventfd write failed"
+                );
             });
             let result = epoll.wait();
-            assert!(result.is_ok(), "epoll_wait should return after EINTR retry: {result:?}");
+            assert!(
+                result.is_ok(),
+                "epoll_wait should return after EINTR retry: {result:?}"
+            );
         });
 
         let elapsed = start.elapsed();

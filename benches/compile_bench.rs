@@ -1,5 +1,11 @@
-#![allow(missing_docs)]
-
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::pedantic,
+    missing_docs,
+    function_casts_as_integer
+)]
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use ebpfkit::compiler::compile_literal_search;
 

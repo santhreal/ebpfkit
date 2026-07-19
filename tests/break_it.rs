@@ -1,9 +1,15 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::pedantic,
+    missing_docs,
+    function_casts_as_integer
+)]
 //! Adversarial tests designed to BREAK the `ebpfkit` crate.
 //!
 //! These tests verify empty inputs, null bytes, max values, resource exhaustion,
 //! concurrency, and malformed structures. Failures here are intentional findings.
-
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ebpfkit::compiler::{
     compile_alternation, compile_character_class, compile_literal_search, CompileError,
@@ -307,10 +313,7 @@ fn test_resource_exhaustion_alternation() {
 #[test]
 fn test_resource_exhaustion_character_class_long() {
     // Creating a massive character class string
-    let mut pattern = Vec::new();
-    for _ in 0..100_000 {
-        pattern.push(b'a');
-    }
+    let pattern = vec![b'a'; 100_000];
     let res = compile_character_class(&pattern);
     match res {
         Ok(_) => panic!("100K char class should fail gracefully"),

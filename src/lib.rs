@@ -13,6 +13,16 @@
 #![warn(missing_docs, clippy::pedantic)]
 #![cfg_attr(not(target_os = "linux"), allow(unused_imports, dead_code))]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::pedantic,
+        function_casts_as_integer
+    )
+)]
 #![allow(
     missing_docs,
     unused_variables,

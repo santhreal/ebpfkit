@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(parse_kernel_release(""), None);
         assert_eq!(parse_kernel_release("unknown"), None);
         assert_eq!(parse_kernel_release("-generic"), None); // leading non-digit -> empty major
-        // u32-overflowing major must NOT wrap to a small number.
+                                                            // u32-overflowing major must NOT wrap to a small number.
         assert_eq!(parse_kernel_release("99999999999.1.0"), None);
     }
 

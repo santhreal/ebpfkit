@@ -157,7 +157,10 @@ fn pattern_with_all_byte_values_compiles_correctly() {
     let halves: [Vec<u8>; 2] = [(0x00..=0x7F).collect(), (0x80..=0xFF).collect()];
 
     for half in &halves {
-        assert!(half.len() <= MAX_BPF_PATTERN_LEN, "half must fit the pattern length cap");
+        assert!(
+            half.len() <= MAX_BPF_PATTERN_LEN,
+            "half must fit the pattern length cap"
+        );
         let prog = compile_literal_search(half).unwrap();
 
         // Verify program structure
@@ -655,13 +658,14 @@ fn run_char_class(prog: &[BpfInsn], input: u8) -> u64 {
 /// below lo0 skipped range 1's lower-bound JLT and matched via range 1's `<= hi`.
 #[test]
 fn char_class_out_of_range_below_all_does_not_match() {
-    let prog = compile_char_class(&[
-        CharRange { lo: 10, hi: 20 },
-        CharRange { lo: 30, hi: 40 },
-    ])
-    .unwrap();
+    let prog =
+        compile_char_class(&[CharRange { lo: 10, hi: 20 }, CharRange { lo: 30, hi: 40 }]).unwrap();
     // 5 < 10 and 5 < 30: in NEITHER range. Must return 0.
-    assert_eq!(run_char_class(&prog, 5), 0, "5 must not match [10-20],[30-40]");
+    assert_eq!(
+        run_char_class(&prog, 5),
+        0,
+        "5 must not match [10-20],[30-40]"
+    );
     // 25 is between the two ranges: also no match.
     assert_eq!(run_char_class(&prog, 25), 0, "25 (gap) must not match");
     // 45 is above both ranges.
@@ -671,16 +675,21 @@ fn char_class_out_of_range_below_all_does_not_match() {
 /// Every byte inside a range matches; boundaries are inclusive.
 #[test]
 fn char_class_in_range_matches_inclusive_boundaries() {
-    let prog = compile_char_class(&[
-        CharRange { lo: 10, hi: 20 },
-        CharRange { lo: 30, hi: 40 },
-    ])
-    .unwrap();
+    let prog =
+        compile_char_class(&[CharRange { lo: 10, hi: 20 }, CharRange { lo: 30, hi: 40 }]).unwrap();
     for b in [10u8, 15, 20, 30, 35, 40] {
-        assert_eq!(run_char_class(&prog, b), 1, "{b} is in a range and must match");
+        assert_eq!(
+            run_char_class(&prog, b),
+            1,
+            "{b} is in a range and must match"
+        );
     }
     for b in [9u8, 21, 29, 41] {
-        assert_eq!(run_char_class(&prog, b), 0, "{b} is just outside every range");
+        assert_eq!(
+            run_char_class(&prog, b),
+            0,
+            "{b} is just outside every range"
+        );
     }
 }
 
@@ -689,7 +698,7 @@ fn char_class_in_range_matches_inclusive_boundaries() {
 fn char_class_single_and_multi_range_full_byte_sweep() {
     let lower = compile_char_class(&[CharRange { lo: b'a', hi: b'z' }]).unwrap();
     for b in 0u8..=255 {
-        let want = u64::from((b'a'..=b'z').contains(&b));
+        let want = u64::from(b.is_ascii_lowercase());
         assert_eq!(run_char_class(&lower, b), want, "[a-z] wrong for byte {b}");
     }
     let alnum = compile_char_class(&[
@@ -700,6 +709,10 @@ fn char_class_single_and_multi_range_full_byte_sweep() {
     .unwrap();
     for b in 0u8..=255 {
         let want = u64::from(b.is_ascii_alphanumeric());
-        assert_eq!(run_char_class(&alnum, b), want, "[0-9a-zA-Z] wrong for byte {b}");
+        assert_eq!(
+            run_char_class(&alnum, b),
+            want,
+            "[0-9a-zA-Z] wrong for byte {b}"
+        );
     }
 }

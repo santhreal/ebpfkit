@@ -48,10 +48,7 @@ enum Token {
 
 /// Decode an escape sequence starting at `class[idx]`, which must be `b'\'`.
 /// Returns the token and the number of input bytes consumed.
-fn decode_character_class_escape(
-    class: &[u8],
-    idx: usize,
-) -> Result<(Token, usize), CompileError> {
+fn decode_character_class_escape(class: &[u8], idx: usize) -> Result<(Token, usize), CompileError> {
     if idx + 1 >= class.len() {
         return Err(CompileError::InvalidPattern {
             reason: "unterminated character-class escape",
@@ -136,7 +133,8 @@ pub(crate) fn parse_character_class(class: &[u8]) -> Result<Vec<PatternRange>, C
     // it rather than silently split the codepoint into unrelated byte ranges.
     if std::str::from_utf8(class).is_ok() && class.iter().any(|b| *b >= 0x80) {
         return Err(CompileError::InvalidPattern {
-            reason: "character class contains non-ASCII codepoints; use raw bytes or an escape sequence",
+            reason:
+                "character class contains non-ASCII codepoints; use raw bytes or an escape sequence",
         });
     }
 
@@ -186,6 +184,7 @@ pub(crate) fn literal_search_instruction_count(pattern_len: usize) -> usize {
     14 + pattern_len * 2
 }
 
+#[cfg(test)]
 pub(crate) fn estimate_character_class_instructions(ranges: &[PatternRange]) -> usize {
     if ranges.is_empty() {
         return 2;
@@ -333,10 +332,7 @@ mod tests {
         );
         assert_eq!(
             parse_character_class(br"\s").unwrap(),
-            vec![
-                PatternRange::Span(b'\t', b'\r'),
-                PatternRange::Single(b' '),
-            ]
+            vec![PatternRange::Span(b'\t', b'\r'), PatternRange::Single(b' '),]
         );
         assert_eq!(
             parse_character_class(br"\w").unwrap(),
@@ -403,11 +399,11 @@ mod tests {
         // equality across single, span, and mixed classes, computing the ranges
         // via the same parser compile uses.
         for class in [
-            &b"a"[..],      // single Span/Single after parse
-            &b"az"[..],     // two singles
-            &b"a-z"[..],    // one span
-            &b"a-z0-9"[..], // two spans
-            &b"a-z0-9_"[..],// two spans + single
+            &b"a"[..],       // single Span/Single after parse
+            &b"az"[..],      // two singles
+            &b"a-z"[..],     // one span
+            &b"a-z0-9"[..],  // two spans
+            &b"a-z0-9_"[..], // two spans + single
         ] {
             let ranges = parse_character_class(class).unwrap();
             let estimate = estimate_character_class_instructions(&ranges);

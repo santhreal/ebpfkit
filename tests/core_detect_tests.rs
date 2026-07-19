@@ -1,3 +1,11 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::pedantic,
+    missing_docs,
+    function_casts_as_integer
+)]
 //! Platform-detection tests for CO-RE capability probe functions.
 //!
 //! These tests exercise `ebpfkit::loader::core_detect` on any Linux system,

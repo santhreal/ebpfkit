@@ -5,9 +5,8 @@ use super::{
     compile_with_limit,
     emit::{patch_imm_jump, patch_match_jump, patch_reg_jump},
     verify::{
-        estimate_alternation_instructions, estimate_character_class_instructions,
-        literal_search_instruction_count, parse_character_class, CharRange, CompileError,
-        PatternRange,
+        estimate_alternation_instructions, literal_search_instruction_count, parse_character_class,
+        CharRange, CompileError, PatternRange,
     },
 };
 
